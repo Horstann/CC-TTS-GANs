@@ -16,5 +16,5 @@ You can visualise model results in `Visualosation.ipynb`.
 
 ## Credits
 This research wouldn't have been possible without the papers and repositories below.
-[1] Li, X., Metsis, V., Wang, H., & Ngu, A. H. H. (2022, June 26). TTS-GAN: a transformer-based Time-Series Generative adversarial network. arXiv.org.https://arxiv.org/abs/2202.02691
-[2] Ding, X., Wang, Y., Xu, Z., Welch, W. J., & Wang, Z. J. (2023, October 22). CCGAN: Continuous conditional generative adversarial networks for image generation. OpenReview. https://openreview.net/forum?id=PrzjugOsDeE
+- Li, X., Metsis, V., Wang, H., & Ngu, A. H. H. (2022, June 26). TTS-GAN: a transformer-based Time-Series Generative adversarial network. arXiv.org.https://arxiv.org/abs/2202.02691
+- Ding, X., Wang, Y., Xu, Z., Welch, W. J., & Wang, Z. J. (2023, October 22). CCGAN: Continuous conditional generative adversarial networks for image generation. OpenReview. https://openreview.net/forum?id=PrzjugOsDeE
