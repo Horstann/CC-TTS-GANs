@@ -106,9 +106,7 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
                 ## index for real images
                 is_in_vicinity = np.reshape(((all_train_conditions-target_conditions[j])**2).sum(axis=-1), (-1,)) <= args.kappa
                 idx_real_in_vicinity = np.nonzero(is_in_vicinity)[0]
-
-            print("IN VICINITY", len(idx_real_in_vicinity))
-
+            
             # select the real image
             real_idx[j] = np.random.choice(idx_real_in_vicinity, size=1)[0]
             # then from the real image conditions, create the fake image conditions
