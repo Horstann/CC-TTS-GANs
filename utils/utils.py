@@ -10,9 +10,10 @@ import math
 import os
 import time
 from datetime import datetime
-
 import dateutil.tz
 import torch
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 from typing import Union, Optional, List, Tuple, Text, BinaryIO
 import pathlib
@@ -199,6 +200,22 @@ def save_checkpoint(states, is_best, output_dir,
     if is_best:
         torch.save(states, os.path.join(output_dir, 'checkpoint_best.pth'))
 
+def plot_2axes(df, y1, y2):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Add traces
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df[y1], name=y1),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(x=df.index, y=df[y2], name=y2),
+        secondary_y=True,
+    )
+    # Set y-axes titles
+    fig.update_yaxes(title_text=y1, secondary_y=False)
+    fig.update_yaxes(title_text=y2, secondary_y=True)
+    fig.show()
 
 class RunningStats:
     def __init__(self, WIN_SIZE):

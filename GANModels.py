@@ -9,7 +9,9 @@ from torchvision.transforms import Compose, Resize, ToTensor
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
 from torchsummary import summary
+from functions import tensor_to_price_paths
 
+SCALE_FACTOR = 45
 
 class Generator(nn.Module):
     def __init__(self, seq_len=42, conditions_dim=0, patch_size=7, channels=1, latent_dim=100, embed_dim=10, depth=3,
@@ -43,12 +45,15 @@ class Generator(nn.Module):
         )
 
     def forward(self, z, conditions):
+        conditions = torch.reshape(conditions, (conditions.shape[0], -1))
         z = self.l1(z).view(-1, self.seq_len, self.embed_dim)
         z = z + self.pos_embed
         out = self.blocks(z, conditions)
         out = out.reshape(out.shape[0], 1, out.shape[1], out.shape[2])
         out = self.deconv(out.permute(0, 3, 1, 2))
         out = out.view(-1, self.channels, 1, self.seq_len)
+        out = out / SCALE_FACTOR
+        out = tensor_to_price_paths(out)
         return out
     
 class Gen_TransformerEncoderBlock(nn.Sequential):
@@ -211,7 +216,7 @@ class Dis_TransformerEncoder(nn.Sequential):
          
         
 class ClassificationHead(nn.Sequential):
-    def __init__(self, emb_size=100, n_classes=2):
+    def __init__(self, emb_size=100, n_classes=1):
         super().__init__()
 
         self.clshead = nn.Sequential(
@@ -259,7 +264,7 @@ class Discriminator(nn.Sequential):
                  in_channels=1,
                  patch_size=7,
                  emb_size=50, 
-                 seq_len = 42,
+                 seq_len=42,
                  conditions_dim=0,
                  depth=3, 
                  n_classes=1, 
@@ -272,6 +277,7 @@ class Discriminator(nn.Sequential):
         self.classification_head = ClassificationHead(emb_size, n_classes)
         
     def forward(self, x, conditions):
+        x = x[:,:,:,1:]
         x = self.patch_embedding(x)
         x = self.encoder(x)
         x = self.conditional_norm(x, conditions)

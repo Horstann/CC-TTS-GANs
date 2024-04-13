@@ -12,7 +12,7 @@ To this end, we propose the CC-TTS-GANs (Continuous Conditional Transformer-Base
 ## Usage
 To start the model training process, simply run `main.py`. <br>
 All models are auto-saved in `logs/`. <br>
-You can visualise model results in `Visualosation.ipynb`.
+You can visualise model results in `Visualisation.ipynb`.
 
 ## Credits
 This research wouldn't have been possible without the papers and repositories below.

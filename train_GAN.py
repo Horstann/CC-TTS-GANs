@@ -175,7 +175,6 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         gen_net = torch.nn.DataParallel(gen_net).cuda()
         dis_net = torch.nn.DataParallel(dis_net).cuda()
-    print(dis_net) if args.rank == 0 else 0
         
 
     # set optimizer
@@ -195,7 +194,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # epoch number for dis_net
     args.max_epoch = args.max_epoch * args.n_critic
-
     if args.max_iter:
         args.max_epoch = np.ceil(args.max_iter * args.n_critic / len(train_loader))
 

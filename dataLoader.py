@@ -23,17 +23,20 @@ from tabulate import tabulate # for verbose tables
 #from tensorflow.keras.utils import to_categorical # for one-hot encoding
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
+from functions import to_price_paths
+from fredapi import Fred
+
+fred = Fred("d6142deac2c2ea7f44ec74aaf3e19825")
 
 class load_dataset(Dataset):
     def __init__(
         self,
         sample_size=None,
         batch_size=8,
-        test_porportion=0.2,
+        test_porportion=0.1,
         verbose=False,
-        data_mode='train', augment_times=None
+        data_mode='train', augment_times=None,
     ):
-        self.sample_size = sample_size
         self.test_proportion = test_porportion
         self.input_size = 1
         self.output_size = 42
@@ -44,14 +47,20 @@ class load_dataset(Dataset):
         start_date = '1999-01-01'
         
         # Get & preprocess data
-        close = yf.download('SPY', start=start_date)['Adj Close']
+        spy = yf.download('SPY', start=start_date)
+        close = spy['Adj Close']
         close.index = pd.to_datetime(close.index)
+        rates = fred.get_series('DGS3MO').loc[start_date:]
+        rates.index = pd.to_datetime(rates.index)
         vix = yf.Ticker('^VIX').history(start=start_date)['Close']
         vix.index = pd.to_datetime(vix.index.tz_convert(None).normalize())
         self.df = pd.DataFrame(index=close.index)
         self.df['close'] = close
+        self.df['rates'] = rates
+        self.df['rates'] = self.df['rates'].ffill()
         self.df['logreturns'] = np.log(close).diff()
         self.df['vix'] = vix
+
         # Incorporate BBG data
         ivol = pd.read_csv('data/ivol.csv', index_col='Date')['ivol']
         ivol.index = pd.to_datetime(ivol.index, format='%d/%m/%Y')
@@ -59,25 +68,20 @@ class load_dataset(Dataset):
         pc_ratio.index = pd.to_datetime(pc_ratio.index, format='%d/%m/%Y')
         self.df['ivol'] = ivol
         self.df['pc_ratio'] = pc_ratio
-        # Transform/normalise conditions
-        self.df, self.condition_names = self.transform_conditions(self.df)
-        self.df.dropna(inplace=True)
-
-        # Extract variables from self.df
-        self.logreturns = np.array(self.df['logreturns'])
+        
+        # Extract normlised conditions from self.df
+        self.df, self.condition_names = self.get_conditions(self.df)
+        self.df.dropna(subset=['close']+self.condition_names, inplace=True)
+        
+        self.targets = np.array(self.df['close'])
         self.conditions = np.concatenate([np.reshape(np.array(self.df[col]), (-1,1)) for col in self.condition_names], axis=1)
 
         # Sample from data to create new train & test sets
-        total_sample_pts = len(self.logreturns) - (self.input_size+self.output_size) + 1
-        if sample_size is None:
-            sample_size = total_sample_pts
-            step_size = 1
-        else:
-            assert sample_size <= total_sample_pts
-            step_size = total_sample_pts / (sample_size - 1)
-        sample_pts = np.array([min(int(round(step_size * i)), total_sample_pts-1) for i in range(sample_size)])
-        self.X = np.array([np.reshape(self.conditions[pt:pt+self.input_size,:], (1,1,-1)) for pt in sample_pts])
-        self.Y = np.array([np.reshape(self.logreturns[pt+self.input_size:pt+self.input_size+self.output_size], (1,1,-1)) for pt in sample_pts])
+        sample_size = len(self.targets) - (self.input_size+self.output_size) + 1
+        self.Y = np.array([np.reshape(self.targets[i+self.input_size-1:i+self.input_size+self.output_size]/self.targets[i+self.input_size-1], (1,1,-1)) for i in range(sample_size)])
+        self.X = np.array([np.reshape(self.conditions[i:i+self.input_size,:], (1,1,-1)) for i in range(sample_size)])
+        self.sample_size = sample_size
+
         self.X = self.X.astype(np.float32)
         self.Y = self.Y.astype(np.float32)
 
@@ -92,12 +96,14 @@ class load_dataset(Dataset):
         else:
             test_size = round(len(self.X) * self.test_proportion)
         self.X_train, self.X_test, self.Y_train, self.Y_test = self.X[:-test_size,:,:,:], self.X[-test_size:,:,:,:], self.Y[:-test_size,:,:,:], self.Y[-test_size:,:,:,:]
+
+        self.test_start_date = self.df.index[len(self.X_train)]
             
         print(f"X_train's shape is {self.X_train.shape}, X_test's shape is {self.X_test.shape}")
         print(f"y_train's label shape is {self.Y_train.shape}, y_test's label shape is {self.Y_test.shape}")
 
     def zscore(self, series, window, keep_first_window=True):
-        series = np.log(series.copy())
+        series = np.log(series.dropna())
         r = series.rolling(window=window)
         m = r.mean().shift(1)
         s = r.std(ddof=1).shift(1)
@@ -106,26 +112,24 @@ class load_dataset(Dataset):
             first_window = series[:window]
             z[:window] = (first_window-first_window.mean())/first_window.std(ddof=1)
         return z
-    def rsi(self, logreturns, window):
-        pos_returns = logreturns.copy()
-        neg_returns = logreturns.copy()
+    def rsi(self, close, window):
+        returns = close.diff()
+        pos_returns = returns.copy()
+        neg_returns = returns.copy()
         pos_returns[pos_returns<0] = 0
         neg_returns[neg_returns>0] = 0
         pos_avg = pos_returns.rolling(window).mean()
         neg_avg = neg_returns.rolling(window).mean().abs()
-        return 100 * pos_avg / (pos_avg + neg_avg)    
-
-    def transform_conditions(self, df):
-        df['rsi11d'] = self.rsi(df['logreturns'], window=11)
-        df['rsi11d_z252d'] = self.zscore(df['rsi11d'], window=252)
-        # df['vix_z252d'] = self.zscore(df['vix'], window=252)
-        df['vix_z42d'] = self.zscore(df['vix'], window=42)
-        df['ivol_z252d'] = self.zscore(df['ivol'], window=252)
-        # df['ivol_z42d'] = self.zscore(df['ivol'], window=42)
-        df['pc_ratio_z252d'] = self.zscore(df['pc_ratio'], window=252)
-        # df['pc_ratio_z42d'] = self.zscore(df['pc_ratio'], window=42)
-        # condition_names = ['rsi11d_z252d', 'vix_z252d', 'vix_z42d', 'ivol_z252d', 'ivol_z42d', 'pc_ratio_z252d', 'pc_ratio_z42d']
-        condition_names = ['rsi11d_z252d', 'vix_z42d', 'ivol_z252d', 'pc_ratio_z252d']
+        return 100 * pos_avg / (pos_avg + neg_avg)
+    
+    def get_conditions(self, df):
+        df['rsi'] = self.rsi(df['close'], window=10)
+        
+        df['rsi_z'] = np.clip(self.zscore(df['rsi'], window=252), -4.5,4.5)
+        df['vix_z'] = np.clip(self.zscore(df['vix'], window=252), -4.5,4.5)
+        df['ivol_z'] = np.clip(self.zscore(df['ivol'], window=189), -4.5,4.5)
+        df['pc_ratio_z'] = self.zscore(df['pc_ratio'], window=252)
+        condition_names = ['rsi_z', 'vix_z']
         return df, condition_names
 
     # def normalise(self, rolling_window_size=None, keep_first_window_size=252):
@@ -169,6 +173,7 @@ if __name__ == '__main__':
 
     train_set = load_dataset(data_mode='Train', augment_times=augment_times, batch_size=batch_size)
     train_loader = data.DataLoader(train_set, batch_size=batch_size, num_workers=num_workers, shuffle=True)
+    print("Kernel sigmas:", 1.06*np.std(train_set.X_train, axis=0) * (len(train_set.X_train))**(-1/5))
     
     # test_set = load_dataset(incl_val_group=False, data_mode='Test', single_class=True)
     # test_loader = data.DataLoader(test_set, batch_size=batch_size, num_workers=num_workers, shuffle=True)
