@@ -9,7 +9,7 @@ from torchvision.transforms import Compose, Resize, ToTensor
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
 from torchsummary import summary
-from functions import tensor_to_price_paths
+from functions import to_price_paths
 
 SCALE_FACTOR = 45
 
@@ -53,7 +53,7 @@ class Generator(nn.Module):
         out = self.deconv(out.permute(0, 3, 1, 2))
         out = out.view(-1, self.channels, 1, self.seq_len)
         out = out / SCALE_FACTOR
-        out = tensor_to_price_paths(out)
+        out = to_price_paths(out)
         return out
     
 class Gen_TransformerEncoderBlock(nn.Sequential):
@@ -154,12 +154,12 @@ class ConditionalLayerNorm2d(nn.Module):
         self.embed_beta = nn.Linear(conditions_dim, emb_size, bias=False)
 
     def forward(self, x, conditions):
-        B, seq_len, emb_size = x.shape
+        b, seq_len, emb_size = x.shape
         # Apply LayerNorm
         out = self.ln(x)  # Shape: (B, seq_len, emb_size)
 
-        gamma = self.embed_gamma(conditions).view(B, 1, emb_size)  # Shape: (B, 1, emb_size)
-        beta = self.embed_beta(conditions).view(B, 1, emb_size)  # Shape: (B, 1, emb_size)
+        gamma = self.embed_gamma(conditions).view(b, 1, emb_size)  # Shape: (b, 1, emb_size)
+        beta = self.embed_beta(conditions).view(b, 1, emb_size)  # Shape: (b, 1, emb_size)
 
         # Apply conditional normalization adjustments
         out = out * gamma + beta

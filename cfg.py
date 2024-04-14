@@ -51,20 +51,26 @@ def parse_args():
         '-gen_bs',
         '--gen_batch_size',
         type=int,
-        default=64,
+        default=32,
         help='size of the batches')
     parser.add_argument(
         '-dis_bs',
         '--dis_batch_size',
         type=int,
-        default=64,
+        default=32,
         help='size of the batches')
     parser.add_argument(
         '-bs',
         '--batch_size',
         type=int,
-        default=64,
+        default=32,
         help='size of the batches to load dataset')
+    parser.add_argument(
+        '-ps',
+        '--point_sample_size',
+        type=int,
+        default=16,
+        help='number of samples to produce for each identical condition, batch_size must be divisble by point_sample_size')
     parser.add_argument(
         '--g_lr',
         type=float,

@@ -129,7 +129,7 @@ class load_dataset(Dataset):
         df['vix_z'] = np.clip(self.zscore(df['vix'], window=252), -4.5,4.5)
         df['ivol_z'] = np.clip(self.zscore(df['ivol'], window=189), -4.5,4.5)
         df['pc_ratio_z'] = self.zscore(df['pc_ratio'], window=252)
-        condition_names = ['rsi_z', 'vix_z']
+        condition_names = ['rsi_z', 'ivol_z']
         return df, condition_names
 
     # def normalise(self, rolling_window_size=None, keep_first_window_size=252):

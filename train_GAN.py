@@ -144,9 +144,8 @@ def main_worker(gpu, ngpus_per_node, args):
         # DistributedDataParallel will use all available devices.
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
-#             gen_net = eval('models_search.'+args.gen_model+'.Generator')(args=args)
-#             dis_net = eval('models_search.'+args.dis_model+'.Discriminator')(args=args)
-
+            # gen_net = eval('models_search.'+args.gen_model+'.Generator')(args=args)
+            # dis_net = eval('models_search.'+args.dis_model+'.Discriminator')(args=args)
             gen_net.apply(weights_init)
             dis_net.apply(weights_init)
             gen_net.cuda(args.gpu)
@@ -193,7 +192,7 @@ def main_worker(gpu, ngpus_per_node, args):
     dis_scheduler = LinearLrDecay(dis_optimizer, args.d_lr, 0.0, 0, args.max_iter * args.n_critic)
 
     # epoch number for dis_net
-    args.max_epoch = args.max_epoch * args.n_critic
+    args.max_epoch = round(args.max_epoch * args.n_critic / args.point_sample_size * 4/3)
     if args.max_iter:
         args.max_epoch = np.ceil(args.max_iter * args.n_critic / len(train_loader))
 

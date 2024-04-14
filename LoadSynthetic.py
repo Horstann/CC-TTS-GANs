@@ -13,15 +13,16 @@ from tqdm import tqdm
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Synthetic_Dataset(Dataset):
-    def __init__(self, 
-                 model_path='./pre-trained-models/checkpoint',
-                 sample_size=None,
-                 test_proportion=0.2,
-                 dataset=None,
-                 verbose=False,
-                 var=1,
-                 **kwargs
-                 ):
+    def __init__(
+            self, 
+            model_path='./pre-trained-models/checkpoint',
+            sample_size=None,
+            test_proportion=0.2,
+            dataset=None,
+            verbose=False,
+            var=1,
+            **kwargs
+        ):
         # Generate Running Data
         self.gen_net = Generator(**kwargs)
         checkpoint = torch.load(model_path, map_location=device)
@@ -52,7 +53,6 @@ class Synthetic_Dataset(Dataset):
         z = torch.FloatTensor(np.random.normal(0, self.sim_var, (n, 100)))
         sims = self.gen_net(z, conditions).detach().numpy()
         return sims
-    
 
 if __name__ == '__main__':
     from torch.utils import data
