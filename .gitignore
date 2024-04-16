@@ -129,7 +129,8 @@ dmypy.json
 .pyre/
 
 # logs
-logs/
+logs/*
+!logs/latest/
 pre-trained-models/
 
 # miscellaneous

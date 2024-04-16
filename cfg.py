@@ -69,7 +69,7 @@ def parse_args():
         '-ps',
         '--point_sample_size',
         type=int,
-        default=16,
+        default=12,
         help='number of samples to produce for each identical condition, batch_size must be divisble by point_sample_size')
     parser.add_argument(
         '--g_lr',

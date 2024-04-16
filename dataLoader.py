@@ -170,7 +170,7 @@ if __name__ == '__main__':
     batch_size = 8
     num_workers = 8
     augment_times = None
-
+    
     train_set = load_dataset(data_mode='Train', augment_times=augment_times, batch_size=batch_size)
     train_loader = data.DataLoader(train_set, batch_size=batch_size, num_workers=num_workers, shuffle=True)
     print("Kernel sigmas:", 1.06*np.std(train_set.X_train, axis=0) * (len(train_set.X_train))**(-1/5))

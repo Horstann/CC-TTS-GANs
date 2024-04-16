@@ -187,14 +187,17 @@ def main_worker(gpu, ngpus_per_node, args):
                                         args.g_lr, weight_decay=args.wd)
         dis_optimizer = AdamW(filter(lambda p: p.requires_grad, dis_net.parameters()),
                                          args.g_lr, weight_decay=args.wd)
+        
+    # epoch number for dis_net
+    if args.max_iter:
+        # len(train_loader) refers to num_batches
+        args.max_epoch = np.ceil(args.max_iter / len(train_loader) * args.n_critic)
+    else:
+        args.max_iter = np.floor(args.max_epoch * len(train_loader))
+        args.max_epoch = round(args.max_epoch * args.n_critic)
     
     gen_scheduler = LinearLrDecay(gen_optimizer, args.g_lr, 0.0, 0, args.max_iter * args.n_critic)
     dis_scheduler = LinearLrDecay(dis_optimizer, args.d_lr, 0.0, 0, args.max_iter * args.n_critic)
-
-    # epoch number for dis_net
-    args.max_epoch = round(args.max_epoch * args.n_critic / args.point_sample_size * 4/3)
-    if args.max_iter:
-        args.max_epoch = np.ceil(args.max_iter * args.n_critic / len(train_loader))
 
     # initial
     fixed_z = torch.FloatTensor(np.random.normal(0, 1, (100, args.latent_dim))).to(device)

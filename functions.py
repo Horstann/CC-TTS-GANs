@@ -78,6 +78,7 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
     for iter_idx, (batch_train_conditions, batch_train_imgs) in enumerate(tqdm(train_loader)):
         global_steps = writer_dict['train_global_steps']
         batch_size = batch_train_conditions.shape[0]
+        batch_points = batch_size*args.point_sample_size
 
         ## randomly draw batch_size y's from unique_conditions
         real_conditions = batch_train_conditions.numpy()
@@ -94,7 +95,7 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
 
         ## find index of real images with labels in the vicinity of batch_target_labels
         ## generate labels for fake image generation; these labels are also in the vicinity of batch_target_labels
-        real_idx = np.zeros((batch_size*args.point_sample_size), dtype=int) #index of images in the data; the labels of these images are in the vicinity
+        real_idx = np.zeros((batch_points), dtype=int) #index of images in the data; the labels of these images are in the vicinity
         for j in range(batch_size):
             sample_start = j*args.point_sample_size
             sample_end = (j+1)*args.point_sample_size
@@ -137,7 +138,7 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
         # else: real_conditions = torch.FloatTensor(real_conditions).to(device, non_blocking=True)
 
         # Sample noise as generator input
-        z = np.random.normal(0, 1, (batch_size*args.point_sample_size, args.latent_dim))
+        z = np.random.normal(0, 1, (batch_points, args.latent_dim))
         if cuda_available: z = torch.cuda.FloatTensor(z).cuda(args.gpu, non_blocking=True)
         else: z = torch.FloatTensor(z).to(device, non_blocking=True)
         
@@ -181,7 +182,7 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
         if global_steps % (args.n_critic * args.accumulated_times) == 0:
             
             for accumulated_idx in range(args.g_accumulated_times):
-                z = np.random.normal(0, 1, (batch_size*args.point_sample_size, args.latent_dim))
+                z = np.random.normal(0, 1, (batch_points, args.latent_dim))
                 if cuda_available: z = torch.cuda.FloatTensor(z)
                 else: z = torch.FloatTensor(z).to(device)
 
@@ -195,13 +196,13 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
                     sample_start = j*args.point_sample_size
                     sample_end = (j+1)*args.point_sample_size
                     fid_score = fid_score + fid(real_imgs[sample_start:sample_end,0,0,1:], fake_imgs[sample_start:sample_end,0,0,1:])
-                fid_score = fid_score / batch_size * 1e-3
+                fid_score = fid_score / batch_size * 1e-1
                 g_loss_components['fid'] = fid_score
                 
                 # num_sets = 4
-                # set_size = args.gen_batch_size//num_sets
-                # fake_img_sets = [fake_imgs[i:i+set_size] for i in range(0, args.gen_batch_size, set_size)]
-                # z_sets = [z[i:i+set_size] for i in range(0, args.gen_batch_size, set_size)]
+                # set_size = (batch_points)//num_sets
+                # fake_img_sets = [fake_imgs[i:i+set_size] for i in range(0, batch_points, set_size)]
+                # z_sets = [z[i:i+set_size] for i in range(0, batch_points, set_size)]
                 # # condition_sets = [target_conditions[i:i+set_size] for i in range(0, args.gen_batch_size, set_size)]
                 # lz = 0
                 # num_pairs = 0
@@ -372,7 +373,7 @@ def fid(data1, data2):
     sigma1, sigma2 = torch.cov(data1.T), torch.cov(data2.T)
     # calculate sqrt of product between cov
     #covmean = 0.5 * (torch_sqrtm(sigma1@sigma2) + torch_sqrtm(sigma2@sigma1))
-    eigvals = 0.5 * (torch.linalg.eigvals(sigma1@sigma2).sqrt().real + torch.linalg.eigvals(sigma2@sigma1).sqrt().real)
+    eigvals = torch.linalg.eigvals(sigma1@sigma2).sqrt().real
     # calculate score
     fid_score = sum((mu1 - mu2)**2.0) + torch.trace(sigma1 + sigma2) - 2*eigvals.sum(dim=-1) # 2*covmean
     return fid_score

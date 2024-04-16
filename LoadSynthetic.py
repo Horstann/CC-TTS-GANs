@@ -21,6 +21,7 @@ class Synthetic_Dataset(Dataset):
             dataset=None,
             verbose=False,
             var=1,
+            n=10,
             **kwargs
         ):
         # Generate Running Data
@@ -32,7 +33,8 @@ class Synthetic_Dataset(Dataset):
         # Generate synthetic data; label is 0
         if dataset is None: self.dataset = load_dataset(data_mode='test', sample_size=sample_size, test_porportion=test_proportion)
         else: self.dataset = dataset
-        self.conditions = torch.from_numpy(self.dataset.X_test).type(torch.float)
+        self.conditions = np.repeat(self.dataset.X_test, n, axis=0)
+        self.conditions = torch.from_numpy(self.conditions).type(torch.float)
         z = torch.FloatTensor(np.random.normal(0, 1, (self.conditions.shape[0], 100)))
         self.sims = self.gen_net(z, self.conditions).detach().numpy()
 
@@ -50,7 +52,7 @@ class Synthetic_Dataset(Dataset):
     def get_sims(self, date, n=100):
         condition = [[list(self.dataset.df[self.dataset.condition_names].loc[date])]]
         conditions = torch.from_numpy(np.array([condition for i in range(n)])).type(torch.float)
-        z = torch.FloatTensor(np.random.normal(0, self.sim_var, (n, 100)))
+        z = torch.FloatTensor(np.random.lognormal(0, self.sim_var, (n, 100)))
         sims = self.gen_net(z, conditions).detach().numpy()
         return sims
 

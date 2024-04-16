@@ -14,6 +14,11 @@ import dateutil.tz
 import torch
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
+from scipy.stats import gaussian_kde
+from scipy.integrate import nquad
+from scipy.linalg import sqrtm
+import pickle
+from tqdm import tqdm
 
 from typing import Union, Optional, List, Tuple, Text, BinaryIO
 import pathlib
@@ -263,3 +268,142 @@ class RunningStats:
 
     def __str__(self):
         return "Current window values: {}".format(list(self.window))
+
+def to_price_paths(logreturns):
+    shape = list(logreturns.shape)
+    shape[-1] += 1
+    
+    exp_logreturns = np.exp(logreturns)
+    price_paths = np.ones(shape)
+    cumulative_products = np.cumprod(exp_logreturns, axis=-1)
+    
+    price_paths[:,:,1:] = cumulative_products
+    return price_paths
+
+class GBM_Simulator:
+    def __init__(self, dataset, nsamples=10):
+        self.dataset = dataset
+        self.ivol = dataset.df.ivol[1:] / np.sqrt(252) / 100
+        self.rates = dataset.df.rates / np.sqrt(252)
+        self.window = dataset.output_size
+        self.train_size = len(dataset.Y_train)
+        self.test_size = len(dataset.Y_test)
+        self.nsamples = nsamples
+    
+    def _empirical_martingale_correction(self, paths, r):
+        """
+        paths: 2d array/list of dimensions nsamples * nsteps
+        r:     risk-free rate
+        """
+        old_paths = paths.copy()
+        for j in range(1, paths.shape[1]):
+            Zj = paths[:, j-1] * paths[:, j] / old_paths[:, j-1]
+            Z0 = 1/len(paths) * np.exp(-r/252*j) * Zj.sum()
+            paths[:, j] = paths[0][0] * Zj / Z0
+        return paths
+    
+    def _simulate(self, mu=0, var=0.1, s0=1, nsamples=10, nsteps=100, EMS=True):
+        """
+        Returns sample_paths, an np.array() of dimensions (nsamples * nsteps)
+        """
+        # For each sample
+        init_path = np.zeros(nsteps + 1)
+        init_path[0] = s0
+        sample_paths = np.array([init_path for _ in range(nsamples)]) # nsamples * (nsteps+1)
+        
+        # Adjust drift terms
+        nu = mu - var/2
+        std = np.sqrt(var)
+        # For each sample
+        for nsample in range(0, nsamples, 2):
+            for nstep in range(nsteps):
+                # Generate correlated random variables
+                z = np.random.randn()
+                # Get normal & antithetic steps
+                step = nu + z*std
+                antithetic_step = nu - z*std
+                # Update the paths
+                sample_paths[nsample, nstep+1] = sample_paths[nsample, nstep] * np.exp(step)
+                if nsample+1<nsamples: sample_paths[nsample+1, nstep+1] = sample_paths[nsample+1, nstep] * np.exp(antithetic_step)
+        # Empirical martingale correction
+        if EMS: sample_paths = self._empirical_martingale_correction(sample_paths, r=mu)
+        return sample_paths
+
+    def _calibrate(self, logreturns):
+        # Get drift
+        mu = logreturns.mean()
+        # Get diffusion
+        var = logreturns.var()
+        return mu, var
+    
+    def run(self, risk_neutral=True, EMS=True):
+        simulations = np.zeros((self.test_size, self.nsamples, self.window+1))
+        # For each window
+        for i in tqdm(range(self.test_size-1), position=0, leave=True):
+            var = self.ivol.iloc[i] ** 2
+            mu = self.rates.iloc[i]
+            # For each sample
+            simulations[i,:,:] = self._simulate(mu, var, nsamples=self.nsamples, nsteps=self.window, EMS=EMS)
+        return simulations
+    
+    def get_sims(self, date, n=100):
+        ivol = self.ivol.loc[date]
+        return self._simulate(mu=0, var=ivol**2, nsamples=n, nsteps=self.window, EMS=True)
+
+# Define a function to compute the KL divergence
+def kl_divergence(pdf1, pdf2):
+    # Sample
+    samples = pdf1.resample(size=10_000)
+    pdf1_values = pdf1(samples)
+    pdf2_values = pdf2(samples)
+    # Compute the log ratio of the PDF values, avoid division by zero
+    with np.errstate(divide='ignore'):
+        log_ratios = np.log(pdf1_values/pdf2_values)
+    # Compute the Monte Carlo estimate of the KL divergence
+    log_ratios = log_ratios[~(np.isnan(log_ratios)|np.isinf(log_ratios))]
+    return np.mean(log_ratios)
+
+def js_divergence(data1, data2, verbose=True, bw_method=None, **kwargs):
+    data1 = data1.reshape((-1,data1.shape[0]))
+    data2 = data2.reshape((-1,data2.shape[0]))
+    data1 = data1[:, ~np.any(np.isnan(data1)|np.isinf(data1), axis=0)]
+    data2 = data2[:, ~np.any(np.isnan(data2)|np.isinf(data2), axis=0)]
+
+    min_len = min(data1.shape[1], data2.shape[1])
+    np.random.shuffle(data1)
+    np.random.shuffle(data2)
+    data1 = data1[:, :min_len]
+    data2 = data2[:, :min_len]
+    pdf1 = gaussian_kde(data1, bw_method=bw_method)
+    pdf2 = gaussian_kde(data2, bw_method=bw_method)
+
+    kl1 = kl_divergence(pdf1, pdf2, **kwargs)
+    if verbose: print(f"KL(data1||data2) = {kl1}")
+    kl2 = kl_divergence(pdf2, pdf1, **kwargs)
+    if verbose: print(f"KL(data2||data1) = {kl2}")
+    return (kl1+kl2)/2
+
+def fid(data1, data2):
+    data1 = data1.reshape((data1.shape[0], -1))[:,1:]
+    data2 = data2.reshape((data2.shape[0], -1))[:,1:]
+    # calculate mean and covariance statistics
+    mu1, sigma1 = data1.mean(axis=0), np.cov(data1, rowvar=False)
+    mu2, sigma2 = data1.mean(axis=0), np.cov(data2, rowvar=False)
+    # calculate sum squared difference between means
+    ssdiff = sum((mu1 - mu2)**2.0)
+    # calculate sqrt of product between cov
+    covmean = 0.5 * (sqrtm(sigma1.dot(sigma2)) + sqrtm(sigma2.dot(sigma1)))
+    # check and correct imaginary numbers from sqrt
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
+    # calculate score
+    fid = ssdiff + np.trace(sigma1 + sigma2 - 2*covmean)
+    return fid
+
+def to_pkl(filename, obj):
+    with open(filename, 'wb') as f:
+        pickle.dump(obj, f)
+def from_pkl(filename):
+    with open(filename, 'rb') as f:
+        obj = pickle.load(f)
+    return obj
