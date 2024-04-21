@@ -130,7 +130,7 @@ dmypy.json
 
 # logs
 logs/*
-!logs/latest/
+!logs/var/
 pre-trained-models/
 
 # miscellaneous

@@ -11,8 +11,9 @@ def parse_args(args=None):
 # Here, you can manually specify the arguments as a list
 args = parse_args(['--rank', '0', '--node', '0020'])
 checkpoint_file = './logs/wgangp-mode/Model/checkpoint'
-batch_size = 8
-point_sample_size = 12
+batch_size = 4
+point_sample_size = 10
+max_epoch = 7
 # --load_path {checkpoint_file} \
 # '/kaggle/working/logs'
 
@@ -24,7 +25,7 @@ os.system(
     -dis_bs {batch_size} \
     --batch_size {batch_size} \
     --point_sample_size {point_sample_size} \
-    --max_epoch 200 \
+    --max_epoch {max_epoch} \
     --dist-url 'tcp://localhost:4321' \
     --dist-backend 'nccl' \
     --world-size 1 \

@@ -68,7 +68,7 @@ def visualization (data_list, name_list, analysis, save_name=None, use_plotly=Tr
     res_list = dim_reduction(data_list, n_components=2, mode=analysis, fit_shape=False)
     
     # Plotting
-    show_plot(res_list, name_list, save_name=save_name, use_plotly=use_plotly, anal_sample_no=anal_sample_no, plot_title='PCA plot')
+    show_plot(res_list, name_list, save_name=save_name, use_plotly=use_plotly, anal_sample_no=anal_sample_no, plot_title=f'{analysis} plot')
 
 # def show_plot(real1, real2, syn1, syn2, save_name, use_plotly=True, anal_sample_no=1000, plot_title=''):
 def show_plot(res_list, name_list, save_name, use_plotly=True, anal_sample_no=1000, plot_title=''):

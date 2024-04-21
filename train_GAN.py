@@ -36,7 +36,7 @@ import re
 
 # torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
 
 def main():
     args = cfg.parse_args()
