@@ -1,0 +1,6 @@
+{
+    "batch_size": 4,
+    "point_sample_size": 10,
+    "max_epoch": 15,
+    "n_critic": 1
+}

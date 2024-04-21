@@ -13,7 +13,8 @@ args = parse_args(['--rank', '0', '--node', '0020'])
 checkpoint_file = './logs/wgangp-mode/Model/checkpoint'
 batch_size = 4
 point_sample_size = 10
-max_epoch = 7
+max_epoch = 15
+n_critic = 1
 # --load_path {checkpoint_file} \
 # '/kaggle/working/logs'
 
