@@ -128,9 +128,10 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# logs
+# logs & results
 logs/*
 !logs/var/
+!results/var/
 pre-trained-models/
 
 # miscellaneous
