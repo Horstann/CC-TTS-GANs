@@ -10,10 +10,14 @@ To address this shortcoming, we propose the use of generative deep learning fram
 To this end, we propose the CC-TTS-GANs (Continuous Conditional Transformer-Based Time-Series GANs). CC-TTS-GANs possess the ability to incorporate some prior condition (such as implied volatility or other market indicators) which are assumed to be continuous in nature, to inform their own simulations. We then explore some of their applications in finance.
 
 ## Usage
+Before running anything, please first create a `.env` file with your FRED api key in it. You can use the `.env.copy` file for reference. You can get your FRED api key [here](https://fred.stlouisfed.org/docs/api/api_key.html). <br>
 To start the model training process, simply run `main.py`. <br>
 All models are auto-saved in `logs/`. <br>
 You can visualise model results in `02 Visualisation.ipynb`. <br>
-Out-sample results are evaluated against Monte-Carlo benchmarks in `03 Evaluation.ipynb`.
+Out-sample results are evaluated in `03 Evaluation.ipynb` against the Monte-Carlo benchmarks below:
+- Geometric Brownian Motion (risk-free)
+- CEV (Constant Elasticity of Variance) model (calibrated in real-world measure)
+- Heston model (calibrated in real-world measure)
 
 ## Credits
 This research wouldn't have been possible without the resources below.

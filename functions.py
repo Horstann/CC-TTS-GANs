@@ -79,7 +79,8 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
     for iter_idx, (batch_train_conditions, batch_train_imgs) in enumerate(tqdm(train_loader)):
         global_steps = writer_dict['train_global_steps']
         batch_size = batch_train_conditions.shape[0]
-        total_batch_points = batch_size*args.point_sample_size
+        total_dis_points = batch_size*args.dis_sample_size
+        total_gen_points = batch_size*args.gen_sample_size
 
         ## randomly draw batch_size y's from unique_conditions
         real_conditions = batch_train_conditions.numpy()
@@ -89,27 +90,24 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
         # lb = np.reshape(target_conditions[j], (-1)) - args.kernel_sigma
         # ub = np.reshape(target_conditions[j], (-1)) + args.kernel_sigma
         # np.concatenate([np.random.uniform(l,u, (1,1,1)) for l,u in zip(lb,ub)], axis=-1)
-        ## repeat arrays args.point_sample_size times
-        real_conditions = np.repeat(real_conditions, args.point_sample_size, axis=0) # shape: (batch_size,1,1,num_conditions)
-        epsilons = np.repeat(epsilons, args.point_sample_size, axis=0)
         target_conditions = real_conditions + epsilons
 
         ## find index of real images with labels in the vicinity of batch_target_labels
         ## generate labels for fake image generation; these labels are also in the vicinity of batch_target_labels
-        real_idx = np.zeros((total_batch_points), dtype=int) #index of images in the data; the labels of these images are in the vicinity
+        real_idx = np.zeros((total_dis_points), dtype=int) #index of images in the data; the labels of these images are in the vicinity
         for j in range(batch_size):
-            sample_start = j*args.point_sample_size
-            sample_end = (j+1)*args.point_sample_size
+            sample_start = j*args.dis_sample_size
+            sample_end = (j+1)*args.dis_sample_size
 
             dist_to_target = np.reshape(((all_train_conditions-target_conditions[j])**2).sum(axis=-1), (-1,))
-            idx_in_vicinity = np.argsort(dist_to_target)[:args.point_sample_size]
+            idx_in_vicinity = np.argsort(dist_to_target)[:args.dis_sample_size]
 
             # ## index for real images
             # is_in_vicinity = np.reshape(((all_train_conditions-target_conditions[j])**2).sum(axis=-1), (-1,)) <= args.kappa
             # idx_in_vicinity = np.nonzero(is_in_vicinity)[0]
 
             # ## if the max gap between two consecutive ordered unique labels is large, it is possible that len(indx_real_in_vicinity)<1
-            # while len(idx_in_vicinity)<args.point_sample_size:
+            # while len(idx_in_vicinity)<args.dis_sample_size:
             #     # redefine batch_target_labels
             #     epsilons_j = np.concatenate([np.random.normal(0, sigma, (1,1,1)) for sigma in args.kernel_sigma], axis=-1)
             #     target_conditions[j] = real_conditions[j] + epsilons_j
@@ -121,12 +119,14 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
             #     print("IN VICINITY", len(idx_in_vicinity), real_conditions[j])
             
             # select the real image
-            real_idx[sample_start:sample_end] = idx_in_vicinity # np.random.choice(idx_in_vicinity, size=args.point_sample_size)[0]
+            real_idx[sample_start:sample_end] = idx_in_vicinity # np.random.choice(idx_in_vicinity, size=args.dis_sample_size)[0]
 
         ## draw the real image batch from the training set
         real_imgs = torch.from_numpy(all_train_imgs[real_idx]).to(device, dtype=torch.float)
         # real_conditions = torch.from_numpy(all_train_conditions[real_idx]).to(device, dtype=torch.float)
-        target_conditions = torch.from_numpy(target_conditions).to(device, dtype=torch.float)
+        target_conditions = torch.from_numpy(target_conditions).to(device, dtype=torch.float) # shape: (batch_size,1,1,num_conditions)
+        dis_target_conditions = target_conditions.repeat_interleave(args.dis_sample_size, dim=0) # shape: (total_dis_points,1,1,num_conditions)
+        gen_target_conditions = target_conditions.repeat_interleave(args.gen_sample_size, dim=0) # shape: (total_gen_points,1,1,num_conditions)
 
         # # Adversarial ground truths
         # real_imgs = imgs
@@ -139,27 +139,27 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
         # else: real_conditions = torch.FloatTensor(real_conditions).to(device, non_blocking=True)
 
         # Sample noise as generator input
-        z = np.random.normal(0, 1, (total_batch_points, args.latent_dim))
+        z = np.random.normal(0, 1, (total_dis_points, args.latent_dim))
         z = torch.FloatTensor(z).to(device, non_blocking=True)
         
         # ---------------------
         #  Train Discriminator
         # ---------------------
-        fake_imgs = gen_net(z, target_conditions).detach()
-        real_validity = dis_net(real_imgs, target_conditions)
-        fake_validity = dis_net(fake_imgs, target_conditions)
+        fake_imgs = gen_net(z, dis_target_conditions).detach()
+        real_validity = dis_net(real_imgs, dis_target_conditions)
+        fake_validity = dis_net(fake_imgs, dis_target_conditions)
 
         d_loss_components = {}
         # cal loss
-        d_loss_components['real'] = -torch.mean(real_validity) # (torch.log(real_validity+1e-20))
+        d_loss_components['real'] = -torch.mean(real_validity)
         d_loss_components['fake'] = torch.mean(fake_validity)
-        d_loss_components['gp'] = compute_gradient_penalty(dis_net, real_imgs, target_conditions, fake_imgs.detach(), args.phi) * 10 / (args.phi ** 2)
+        d_loss_components['gp'] = compute_gradient_penalty(dis_net, real_imgs, dis_target_conditions, fake_imgs.detach(), args.phi) * 10 / (args.phi ** 2)
         # d_loss_components['eps'] = (torch.mean(real_validity) ** 2) * 1e-3 # Adds eps
         
         d_loss = 0
         for key,val in d_loss_components.items():
             d_loss_components[key] = val/float(args.accumulated_times)
-            d_loss += d_loss_components[key]
+            d_loss = d_loss + d_loss_components[key]
         d_loss.backward(retain_graph=True)
         
         if (iter_idx + 1) % args.accumulated_times == 0:
@@ -175,47 +175,77 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
         if global_steps % (args.n_critic * args.accumulated_times) == 0:
             
             for accumulated_idx in range(args.g_accumulated_times):
-                z = np.random.normal(0, 1, (total_batch_points, args.latent_dim))
+                z = np.random.normal(0, 1, (total_gen_points, args.latent_dim))
                 z = torch.FloatTensor(z).to(device)
-                fake_imgs = gen_net(z, target_conditions)
-                fake_validity = dis_net(fake_imgs, target_conditions)
-                real_validity = dis_net(real_imgs, target_conditions).detach()
+                fake_imgs = gen_net(z, gen_target_conditions)
+                ## sample subset of fake_imgs
+                subset_idx = torch.cat([torch.randperm(args.gen_sample_size)[:args.dis_sample_size] + i*args.dis_sample_size for i in range(args.batch_size)])
+                fake_validity = dis_net(fake_imgs[subset_idx], dis_target_conditions)
+                real_validity = dis_net(real_imgs, dis_target_conditions).detach()
                 
+                g_loss_components['var'] = 0
+                g_loss_components['m1'], g_loss_components['m2'], g_loss_components['m3'] = 0, 0, 0
+                g_loss_components['m2x'] = 0
 
-                g_loss_components['fake_real'] = (torch.mean(fake_validity)-torch.mean(real_validity)) ** 2
-                
-                fid_score = 0
-                var_score = 0
+                g_loss_components['m1_val'] = 0
+                g_loss_components['m2_val'] = 0
+                g_loss_components['m3_val'] = 0
+
                 for j in range(batch_size):
-                    sample_start = j*args.point_sample_size
-                    sample_end = (j+1)*args.point_sample_size
-                    batch_real_imgs = real_imgs[sample_start:sample_end,0,0,1:]
-                    batch_fake_imgs = fake_imgs[sample_start:sample_end,0,0,1:]
-                    try:
-                        fid_score = fid_score + fid(batch_real_imgs, batch_fake_imgs, var_multiple=1)
-                    except Exception as e:
-                        print("data1")
-                        print(batch_real_imgs)
-                        print("data2")
-                        print(batch_fake_imgs)
-                        print()
-                        print("conditions")
-                        print(target_conditions[sample_start:sample_end])
-                        print("z")
-                        print(z[sample_start:sample_end])
-                        raise Exception(e)
+                    dis_sample_start = j*args.dis_sample_size
+                    dis_sample_end = (j+1)*args.dis_sample_size
+                    gen_sample_start = j*args.gen_sample_size
+                    gen_sample_end = (j+1)*args.gen_sample_size
+                    batch_real_imgs = real_imgs[dis_sample_start:dis_sample_end,0,0,1:]
+                    batch_fake_imgs = fake_imgs[gen_sample_start:gen_sample_end,0,0,1:]
+
+                    mu_real, mu_fake = torch.mean(batch_real_imgs, dim=0), torch.mean(batch_fake_imgs, dim=0)
+                    std_real, std_fake = torch.std(batch_real_imgs, dim=0), torch.std(batch_fake_imgs, dim=0)
+                    zscores_real, zscores_fake = (batch_real_imgs-mu_real)/std_real, (batch_fake_imgs-mu_fake)/std_fake
+                    scaled_std_real, scaled_std_fake = std_real/mu_real, std_fake/mu_fake
+                    n_real, n_fake = batch_real_imgs.size(0), batch_fake_imgs.size(0)
+                    skew_real, skew_fake = torch.sum(torch.pow(zscores_real, 3.0), dim=0) * n_real/(n_real-1)/(n_real-2), torch.sum(torch.pow(zscores_fake, 3.0), dim=0) * n_fake/(n_fake-1)/(n_fake-2)
+                    # skew_real, skew_fake = torch.mean(torch.pow(zscores_real, 3.0), dim=0), torch.mean(torch.pow(zscores_fake, 3.0), dim=0)
+
+                    g_loss_components['var'] = g_loss_components['var'] + 1/(torch.mean(scaled_std_fake))
                     
-                    # corr_matrix = torch.corrcoef(batch_fake_imgs.T)
-                    # var_score = var_score + torch.abs(torch.sum(corr_matrix)-args.point_sample_size)/(2*args.point_sample_size*(args.point_sample_size-1))
-                    var_score = var_score + 1e-3/(torch.mean(torch.std(batch_fake_imgs, dim=0)/torch.mean(batch_fake_imgs, dim=0)))
-                g_loss_components['fid'] = fid_score
-                g_loss_components['var'] = var_score
-            
-                # g_loss = 0
+                    g_loss_components['m1'] = g_loss_components['m1'] + torch.mean(torch.pow(mu_real-mu_fake, 2.0))
+                    g_loss_components['m2'] = g_loss_components['m2'] + torch.mean(torch.pow(std_real-std_fake, 2.0))
+                    g_loss_components['m3'] = g_loss_components['m3'] + torch.mean(torch.pow(skew_real-skew_fake, 2.0))
+
+                    # Get only non-diagonal elements of corr matrix
+                    corr_real, corr_fake = torch.corrcoef(batch_real_imgs.T), torch.corrcoef(batch_fake_imgs.T)
+                    nsteps = batch_real_imgs.size(1)
+                    assert nsteps == batch_fake_imgs.size(1), f"batch_real_imgs has {nsteps} timesteps, but batch_fake_imgs has {batch_fake_imgs.size(1)} timesteps."
+                    # mask = 1 - torch.eye(nsteps, device=corr_real.device)
+                    # g_loss_components['m2x'] = g_loss_components['m2x'] + torch.sum(torch.pow((corr_real-corr_fake)*mask, 2.0)) / (nsteps**2 - nsteps)
+                    g_loss_components['m2x'] = g_loss_components['m2x'] + fid(batch_real_imgs, batch_fake_imgs)
+
+
+                    batch_real_val = real_validity[dis_sample_start:dis_sample_end, :]
+                    batch_fake_val = fake_validity[dis_sample_start:dis_sample_end, :]
+                    mu_real_val, mu_fake_val = torch.mean(batch_real_val), torch.mean(batch_fake_val)
+                    std_real_val, std_fake_val = torch.std(batch_real_val), torch.std(batch_fake_val)
+                    zscores_real_val, zscores_fake_val = (batch_real_val-mu_real_val)/std_real_val, (batch_fake_val-mu_fake_val)/std_fake_val
+                    # scaled_std_real_val, scaled_std_fake_val = std_real_val/mu_real_val, std_fake_val/mu_fake_val
+                    skew_real_val, skew_fake_val = torch.sum(torch.pow(zscores_real_val, 3.0)) * n_real/(n_real-1)/(n_real-2), torch.sum(torch.pow(zscores_fake_val, 3.0)) * n_real/(n_real-1)/(n_real-2)
+                    g_loss_components['m1_val'] = g_loss_components['m1_val'] + torch.pow(mu_real_val-mu_fake_val, 2.0)
+                    g_loss_components['m2_val'] = g_loss_components['m2_val'] + torch.pow(std_real_val-std_fake_val, 2.0)
+                    g_loss_components['m3_val'] = g_loss_components['m3_val'] + torch.pow(skew_real_val-skew_fake_val, 2.0)
+
+                if args.var_term_weight==0: del g_loss_components['var']
+                else: g_loss_components['var'] = g_loss_components['var'] * args.var_term_weight
+
+                g_loss_components['m2x'] = g_loss_components['m2x'] * args.m2x_term_weight
+
+                g_loss = 0
                 for key,val in g_loss_components.items():
+                    # assert val>0, f"{key} has negative value {val}"
                     g_loss_components[key] = val / batch_size / float(args.accumulated_times)
-                g_loss = g_loss_components['fake_real'] + g_loss_components['fid'] + g_loss_components['var']
+                    g_loss = g_loss + g_loss_components[key]
+                    
                 g_loss.backward()
+                
             
             torch.nn.utils.clip_grad_norm_(gen_net.parameters(), 5.)
             gen_optimizer.step()
@@ -274,7 +304,7 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
         writer_dict['train_global_steps'] = global_steps + 1
 
 
-def save_samples(args, fixed_z, fid_stat, epoch, gen_net: nn.Module, writer_dict, clean_dir=True):
+def save_samples(args, fixed_z, epoch, gen_net: nn.Module, writer_dict, clean_dir=True):
     # eval mode
     gen_net.eval()
     with torch.no_grad():
@@ -364,17 +394,19 @@ def to_price_paths(logreturns):
     price_paths[:,:,:,1:] = cumulative_products
     return price_paths
 
-def fid(data1, data2, var_multiple=1):
+def fid(data1, data2):
     # calculate mean and covariance statistics
-    mu1, mu2 = torch.mean(data1, dim=0), torch.mean(data2, dim=0)
+    # mu1, mu2 = torch.mean(data1, dim=0), torch.mean(data2, dim=0)
     sigma1, sigma2 = torch.cov(data1.T), torch.cov(data2.T)
-    if var_multiple!=1: sigma2 = sigma2 * (torch.eye(sigma2.size(0)).to(device) * (1/var_multiple-1) + torch.ones_like(sigma2).to(device))
+    # if var_multiple!=1: sigma2 = sigma2 * (torch.eye(sigma2.size(0)).to(device) * (1/var_multiple-1) + torch.ones_like(sigma2).to(device))
     # calculate sqrt of product between cov
-    #covmean = 0.5 * (torch_sqrtm(sigma1@sigma2) + torch_sqrtm(sigma2@sigma1))
     eigvals = torch.linalg.eigvals(sigma1@sigma2).sqrt().real
     # calculate score
-    fid_score = sum((mu1 - mu2)**2.0) + torch.trace(sigma1 + sigma2) - 2*eigvals.sum(dim=-1) # 2*covmean
-    return fid_score
+    # means_l2 = sum((mu1 - mu2)**2.0)
+    covar_sum = torch.trace(sigma1) + torch.trace(sigma2) - 2*eigvals.sum()
+
+    # fid_score = means_l2 + covar_sum
+    return covar_sum # fid_score
 
 def torch_sqrtm(matrix):
     """Compute the square-root of a positive semi-definite matrix using eigenvalue decomposition."""

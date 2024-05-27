@@ -11,7 +11,6 @@ from GANModels import *
 from functions import train, save_samples, LinearLrDecay, load_params, copy_params, cur_stages, adapt_state_dict_for_loading
 from utils.utils import set_log_dir, save_checkpoint, create_logger
 # from utils.inception_score import _init_inception
-# from utils.fid_score import create_inception_graph, check_or_download_inception
 
 import torch
 import torch.multiprocessing as mp
@@ -33,10 +32,24 @@ import PIL.Image
 from torchvision.transforms import ToTensor
 import warnings
 import re
+from utils.utils import from_json, to_json
 
 # torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
 device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
+HYPERPARAM_NAMES = [
+    "seq_len",
+    "patch_size",
+    "dis_emb_size",
+    "gen_emb_size", 
+    "batch_size",
+    "m2x_term_weight",
+    "var_term_weight",
+    "gen_sample_size",
+    "dis_sample_size",
+    "max_epoch",
+    "n_critic",
+]
 
 def main():
     args = cfg.parse_args()
@@ -121,7 +134,7 @@ def main_worker(gpu, ngpus_per_node, args):
     # train_loader = data.DataLoader(train_set, batch_size=args.dis_batch_size, num_workers=args.num_workers, shuffle=True)
     # test_loader = data.DataLoader(test_set, batch_size=args.dis_batch_size, num_workers=args.num_workers, shuffle=True)
     
-    train_set = load_dataset(data_mode='train', augment_times=args.augment_times, batch_size=args.batch_size)
+    train_set = load_dataset(data_mode='train', output_size=args.seq_len, batch_size=args.batch_size, augment_times=args.augment_times)
     train_loader = data.DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle = True)
     # test_set = load_dataset(incl_val_group = False, data_mode = 'Test', single_class = True, class_name = args.class_name)
     # test_loader = data.DataLoader(test_set, batch_size=args.batch_size, num_workers=args.num_workers, shuffle = True)
@@ -134,8 +147,8 @@ def main_worker(gpu, ngpus_per_node, args):
         args.kappa = sum(args.kernel_sigma**2)
     
     # import network
-    gen_net = Generator(seq_len=train_set.output_size, latent_dim=args.latent_dim, conditions_dim=train_set.X_train.shape[-1])
-    dis_net = Discriminator(seq_len=train_set.output_size, conditions_dim=train_set.X_train.shape[3])
+    gen_net = Generator(seq_len=train_set.output_size, patch_size=args.patch_size, emb_size=args.gen_emb_size, latent_dim=args.latent_dim, conditions_dim=train_set.X_train.shape[-1])
+    dis_net = Discriminator(seq_len=train_set.output_size, patch_size=args.patch_size, emb_size=args.dis_emb_size, conditions_dim=train_set.X_train.shape[3])
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
     elif args.distributed:
@@ -241,6 +254,15 @@ def main_worker(gpu, ngpus_per_node, args):
 #         gen_avg_param = list(p.cuda().to(f"cuda:{args.gpu}") for p in gen_avg_param)
         
         args.path_helper = checkpoint['path_helper']
+        # get existing hyperparameters
+        hyperparams = from_json(os.path.join(args.path_helper['prefix'], 'hyperparameters.json'))
+        if args.max_epoch > hyperparams['max_epoch']:
+            hyperparams['max_epoch'] = args.max_epoch
+            to_json(os.path.join(args.path_helper['prefix'], 'hyperparameters.json'), hyperparams)
+        for attr, value in hyperparams.items():
+            setattr(args, attr, value)
+        
+        # create logger
         logger = create_logger(args.path_helper['log_path']) if args.rank == 0 else None
         print(f'=> loaded checkpoint {checkpoint_file} (epoch {start_epoch})')
         writer = SummaryWriter(args.path_helper['log_path']) if args.rank == 0 else None
@@ -250,6 +272,8 @@ def main_worker(gpu, ngpus_per_node, args):
         assert args.exp_name
         if args.rank == 0:
             args.path_helper = set_log_dir(args.log_dir, args.exp_name)
+            hyperparams = {attr: getattr(args, attr) for attr in HYPERPARAM_NAMES}
+            to_json(os.path.join(args.path_helper['prefix'], 'hyperparameters.json'), hyperparams)
             logger = create_logger(args.path_helper['log_path'])
             writer = SummaryWriter(args.path_helper['log_path'])
     

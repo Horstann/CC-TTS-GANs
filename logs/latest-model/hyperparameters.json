@@ -1,0 +1,1 @@
+{"seq_len": 42, "patch_size": 6, "dis_emb_size": 50, "gen_emb_size": 10, "batch_size": 4, "m2x_term_weight": 0.01, "var_term_weight": 0.0, "gen_sample_size": 30, "dis_sample_size": 10, "max_epoch": 40, "n_critic": 1}

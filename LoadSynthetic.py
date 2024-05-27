@@ -9,30 +9,33 @@ import os
 from dataLoader import *
 from functions import to_price_paths
 from tqdm import tqdm
+import json
+from utils.utils import to_json, from_json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Synthetic_Dataset(Dataset):
     def __init__(
             self, 
-            model_path='./pre-trained-models/checkpoint',
+            model_path,
             sample_size=None,
             test_proportion=0.2,
             dataset=None,
             verbose=False,
             var=1,
-            n=10,
-            **kwargs
+            n=10
         ):
-        # Generate Running Data
-        self.gen_net = Generator(**kwargs)
-        checkpoint = torch.load(model_path, map_location=device)
+        if dataset is None: self.dataset = load_dataset(data_mode='test', sample_size=sample_size, test_porportion=test_proportion)
+        else: self.dataset = dataset
+
+        checkpoint = torch.load(os.path.join(model_path,'Model','checkpoint'), map_location=device)
+        hyperparams = from_json(os.path.join(model_path,'hyperparameters.json'))
+        conditions_dim = self.dataset.X_train.shape[-1]
+        self.gen_net = Generator(conditions_dim=conditions_dim, seq_len=hyperparams['seq_len'], patch_size=hyperparams['patch_size'], emb_size=hyperparams['gen_emb_size'])
         self.gen_net.load_state_dict(checkpoint['gen_state_dict'])
         self.sim_var = var
         
-        # Generate synthetic data; label is 0
-        if dataset is None: self.dataset = load_dataset(data_mode='test', sample_size=sample_size, test_porportion=test_proportion)
-        else: self.dataset = dataset
+        # Generate synthetic data
         self.conditions = np.repeat(self.dataset.X_test, n, axis=0)
         self.conditions = torch.from_numpy(self.conditions).type(torch.float)
         z = torch.FloatTensor(np.random.normal(0, 1, (self.conditions.shape[0], 100)))
@@ -59,7 +62,7 @@ class Synthetic_Dataset(Dataset):
 if __name__ == '__main__':
     from torch.utils import data
 
-    syn_data = Synthetic_Dataset(model_path='./logs/latest/Model/checkpoint', seq_len=42, conditions_dim=2)
+    syn_data = Synthetic_Dataset(model_path='./logs/Running_2024_04_22_12_42_39')
     syn_dataloader = data.DataLoader(syn_data, batch_size=1, num_workers=1, shuffle=True)
 
     # syn_sims = []
@@ -81,4 +84,4 @@ if __name__ == '__main__':
     # print(syn_conds.shape)
 
     sims = syn_data.get_sims(date='2023-09-05')
-    print(sims)
+    print(sims.shape)

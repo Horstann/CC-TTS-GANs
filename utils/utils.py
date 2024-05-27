@@ -19,7 +19,12 @@ from scipy.integrate import nquad
 from scipy.linalg import sqrtm
 import pickle
 from tqdm import tqdm
-
+import json
+from abc import ABC, abstractmethod
+from scipy.optimize import minimize
+from scipy.stats import norm
+import re
+import QuantLib as ql
 from typing import Union, Optional, List, Tuple, Text, BinaryIO
 import pathlib
 import torch
@@ -27,6 +32,7 @@ import math
 import warnings
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageColor
+from scipy.stats import ncx2
 
 @torch.no_grad()
 def make_grid(
@@ -198,6 +204,13 @@ def set_log_dir(root_dir, exp_name):
 
     return path_dict
 
+def to_json(filepath, obj):
+    with open(filepath, 'w') as f:
+        json.dump(obj, f)
+def from_json(filepath):
+    with open(filepath) as f:
+        obj = json.load(f)
+    return obj
 
 def save_checkpoint(states, is_best, output_dir,
                     filename='checkpoint.pth'):
@@ -280,55 +293,30 @@ def to_price_paths(logreturns):
     price_paths[:,:,1:] = cumulative_products
     return price_paths
 
-class GBM_Simulator:
+class Simulator(ABC):
     def __init__(self, dataset, nsamples=10):
         self.dataset = dataset
-        self.ivol = dataset.df.ivol[1:] / np.sqrt(252) / 100
-        self.rates = dataset.df.rates / np.sqrt(252)
         self.window = dataset.output_size
         self.train_size = len(dataset.Y_train)
-        self.test_size = len(dataset.Y_test)
+        self.test_size = len(dataset.option_prices.loc[dataset.test_start_date:].index)
         self.nsamples = nsamples
+        self.ivol_surface = dataset.df[list(dataset.ivol_surface.columns)] / np.sqrt(252) / 100
+        self.ivol = self.ivol_surface['100%60d']
+        self.option_prices = dataset.option_prices
+        self.rates = np.log(1+dataset.df.rates[self.train_size:]/100) / 252
     
     def _empirical_martingale_correction(self, paths, r):
-        """
+        """m
         paths: 2d array/list of dimensions nsamples * nsteps
         r:     risk-free rate
         """
         old_paths = paths.copy()
         for j in range(1, paths.shape[1]):
             Zj = paths[:, j-1] * paths[:, j] / old_paths[:, j-1]
-            Z0 = 1/len(paths) * np.exp(-r/252*j) * Zj.sum()
+            Z0 = 1/len(paths) * np.exp(-r*j) * Zj.sum()
             paths[:, j] = paths[0][0] * Zj / Z0
         return paths
     
-    def _simulate(self, mu=0, var=0.1, s0=1, nsamples=10, nsteps=100, EMS=True):
-        """
-        Returns sample_paths, an np.array() of dimensions (nsamples * nsteps)
-        """
-        # For each sample
-        init_path = np.zeros(nsteps + 1)
-        init_path[0] = s0
-        sample_paths = np.array([init_path for _ in range(nsamples)]) # nsamples * (nsteps+1)
-        
-        # Adjust drift terms
-        nu = mu - var/2
-        std = np.sqrt(var)
-        # For each sample
-        for nsample in range(0, nsamples, 2):
-            for nstep in range(nsteps):
-                # Generate correlated random variables
-                z = np.random.randn()
-                # Get normal & antithetic steps
-                step = nu + z*std
-                antithetic_step = nu - z*std
-                # Update the paths
-                sample_paths[nsample, nstep+1] = sample_paths[nsample, nstep] * np.exp(step)
-                if nsample+1<nsamples: sample_paths[nsample+1, nstep+1] = sample_paths[nsample+1, nstep] * np.exp(antithetic_step)
-        # Empirical martingale correction
-        if EMS: sample_paths = self._empirical_martingale_correction(sample_paths, r=mu)
-        return sample_paths
-
     def _calibrate(self, logreturns):
         # Get drift
         mu = logreturns.mean()
@@ -336,19 +324,351 @@ class GBM_Simulator:
         var = logreturns.var()
         return mu, var
     
-    def run(self, risk_neutral=True, EMS=True):
+    def BS_theoretical_call_price(self, S, K, T, mu, sigma, r):
+        """Calculate the Black-Scholes price for a European call option."""
+        d1 = (np.log(S / K) + (mu + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        call_price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+        return call_price
+
+    def BS_theoretical_put_price(self, S, K, T, mu, sigma, r):
+        """Calculate the Black-Scholes price for a European put option."""
+        d1 = (np.log(S / K) + (mu + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        put_price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        return put_price
+    
+    @abstractmethod
+    def _simulate(self):
+        pass
+
+
+class GBM_Simulator(Simulator):
+    def __init__(self, dataset, nsamples=10):
+        super().__init__(dataset=dataset, nsamples=nsamples)
+
+    def _simulate(self, mu, sigma, s0=1, nsamples=10, nsteps=100, EMS=True):
+        """
+        Returns paths, an np.array() of dimensions (nsamples * nsteps)
+        """
+        paths = np.zeros((nsamples, nsteps + 1)) # nsamples * (nsteps+1)
+        paths[:, 0] = s0
+        
+        # Adjust drift terms
+        nu = mu - (sigma**2)/2
+        # For each sample
+        for i in range(0, nsamples, 2):
+            add_antithetic = i+1<nsamples
+            for t in range(nsteps):
+                # Generate rv
+                z = np.random.normal()
+                # Get incremental step
+                step = nu + z*sigma
+                # Update the paths
+                paths[i, t+1] = paths[i, t] * np.exp(step)
+
+                if add_antithetic:
+                    # Get antithetic variates
+                    antithetic_step = nu - z*sigma
+                    paths[i+1, t+1] = paths[i+1, t] * np.exp(antithetic_step)
+        # Empirical martingale correction
+        if EMS: paths = self._empirical_martingale_correction(paths, r=mu)
+        return paths
+    
+    def run(self):
         simulations = np.zeros((self.test_size, self.nsamples, self.window+1))
         # For each window
-        for i in tqdm(range(self.test_size-1), position=0, leave=True):
-            var = self.ivol.iloc[i] ** 2
-            mu = self.rates.iloc[i]
-            # For each sample
-            simulations[i,:,:] = self._simulate(mu, var, nsamples=self.nsamples, nsteps=self.window, EMS=EMS)
+        for i in range(self.test_size):
+            simulations[i,:,:] = self.get_sims(i, n=self.nsamples, mode='index')
         return simulations
     
-    def get_sims(self, date, n=100):
-        ivol = self.ivol.loc[date]
-        return self._simulate(mu=0, var=ivol**2, nsamples=n, nsteps=self.window, EMS=True)
+    def get_sims(self, i, n=100, mode='date'):
+        if mode=='date':
+            mu = self.rates.loc[i]
+            sigma = self.ivol.loc[i]
+        else:
+            mu = self.rates.iloc[i]
+            sigma = self.ivol.iloc[i]
+        return self._simulate(mu=mu, sigma=sigma, nsamples=n, nsteps=self.window, EMS=True)
+    
+
+class CEV_Simulator(Simulator):
+    def __init__(self, dataset, nsamples=10):
+        super().__init__(dataset=dataset, nsamples=nsamples)
+
+    def _simulate(self, params, s0=1, nsamples=10, nsteps=100, EMS=True):
+        """
+        Returns paths, an np.array() of dimensions (nsamples * nsteps)
+        """
+        mu, sigma, gamma = params
+        paths = np.zeros((nsamples, nsteps + 1)) # nsamples * (nsteps+1)
+        paths[:, 0] = s0
+        
+        # For each sample
+        for i in range(0, nsamples, 2):
+            add_antithetic = i+1<nsamples
+            for t in range(nsteps):
+                # Generate rv
+                z = np.random.normal()
+                # Get incremental step
+                drift = mu - 0.5 * sigma**2 * np.exp((2*gamma - 2) * paths[i, t])
+                if np.isinf(drift):
+                    if drift<0: drift = -1
+                    else: drift = 1
+                diffusion = min(sigma * np.exp((gamma - 1) * paths[i, t]), 1)
+                step = drift + z*diffusion
+                # Update the paths
+                paths[i, t+1] = paths[i, t] * np.exp(step)
+
+                if add_antithetic: 
+                    # Get antithetic variates
+                    antithetic_step = drift - z*diffusion
+                    paths[i+1, t+1] = paths[i+1, t] * np.exp(antithetic_step)
+        # Empirical martingale correction
+        if EMS: paths = self._empirical_martingale_correction(paths, r=mu)
+        return paths
+    
+    def _price(self, S, K, mu, sigma, gamma, r, T, option_type='call'):
+        """
+        Calculate the theoretical CEV implied price for an option given parameters.
+        
+        Parameters:
+        S (float): Current stock price
+        K (float): Strike price of the option
+        mu (float): Drift term in the CEV model
+        sigma (float): Volatility coefficient in the CEV model
+        gamma (float): Elasticity parameter
+        r (float): Risk-free rate
+        T (float): Time to expiration of the option
+        option_type (str): 'call' for call option, 'put' for put option
+        """
+
+        collapse_to_BS = gamma==1
+        if option_type=='call':
+            # theoretical_price = self.BS_theoretical_call_price(S, K, T, mu, sigma, r)
+            if collapse_to_BS:
+                theoretical_price = self.BS_theoretical_call_price(S, K, T, mu, sigma, r)
+            else:
+                a = (K**(2 * (1-gamma))) / ((1-gamma)**2 * sigma**2 * T)
+                b = 1 / (1 - gamma)
+                c = ((S*np.exp(mu*T)) ** (2*(1-gamma))) / ((1-gamma)**2 * sigma**2 * T)
+                if gamma < 1:
+                    theoretical_price = S*(1 - ncx2.cdf(a,b+2,c)) - K*np.exp(-r*T)*ncx2.cdf(c,b,a)
+                else:
+                    theoretical_price = S*(1 - ncx2.cdf(c,-b,a)) - K*np.exp(-r*T)*ncx2.cdf(a,2-b,a)
+        elif option_type=='put':
+            # theoretical_price = self.BS_theoretical_put_price(S, K, T, mu, sigma, r)
+            if collapse_to_BS:
+                theoretical_price = self.BS_theoretical_put_price(S, K, T, mu, sigma, r)
+            else:
+                a = (K**(2 * (1-gamma))) / ((1-gamma)**2 * sigma**2 * T)
+                b = 1 / (1 - gamma)
+                c = ((S*np.exp(mu*T)) ** (2*(1-gamma))) / ((1-gamma)**2 * sigma**2 * T)
+                if gamma < 1:
+                    theoretical_price = K*np.exp(-r*T)*(1 - ncx2.cdf(c,b,a)) - S*ncx2.cdf(a,b+2,c)
+                else:
+                    theoretical_price = K*np.exp(-r*T)*(1 - ncx2.cdf(a,2-b,c)) - S*ncx2.cdf(c,-b,a)
+        else:
+            raise NotImplementedError
+        
+        return theoretical_price
+    
+    def _objective_func(self, params, market_prices, moneyness_levels, maturities, option_types, r, S0=1):
+        """
+        Objective function to minimize the sum of squared differences between market and model average prices.
+        """
+        max_T = int(max(maturities) * 252/365)
+        paths = self._simulate(params, nsamples=100, nsteps=max_T, EMS=True)
+    
+        errors = []
+        for i, (market_price, M, T, option_type) in enumerate(zip(market_prices, moneyness_levels, maturities, option_types)):
+            K = S0*M
+            T = int(T*252/365)
+            if option_type=='call':
+                model_price = (np.maximum(paths[:,T] - K, 0)).mean() * np.exp(-r*T)
+            elif option_type=='put':
+                model_price = (np.maximum(K - paths[:,T], 0)).mean() * np.exp(-r*T)
+            # model_price = self._price(S0, K, mu, sigma, gamma, r, T*252/365, option_type)
+            # print(model_price, market_price)
+            error = (model_price-market_price)**2
+            errors.append(error)
+        return np.sum(errors)
+
+    def _calibrate(self, i, mode='index'):
+        if mode=='index':
+            option_eod = self.option_prices.iloc[i]
+            ivol_surface = self.ivol_surface.iloc[i]
+            r = self.rates.iloc[i]
+        else:
+            option_eod = self.option_prices.loc[i]
+            ivol_surface = self.ivol_surface.loc[i]
+            r = self.rates.loc[i]
+
+        moneyness_level = option_eod['moneyness_level']
+        maturity = option_eod['maturity']
+        S0 = option_eod['underlying_price']
+        args=([option_eod['call_price'], option_eod['put_price']], [moneyness_level, moneyness_level], [maturity, maturity], ['call', 'put'], r, S0)
+        initial_params = [r, ivol_surface.mean(), 1] # mu, sigma, gamma
+        est_gamma = minimize(self._objective_func, initial_params, args=args, bounds=[(r,r), (1e-3,1e-2), (0,2)])
+        return est_gamma.x
+    
+    def run(self):
+        simulations = np.zeros((self.test_size, self.nsamples, self.window+1))
+        # For each window
+        for i in range(self.test_size):
+            simulations[i,:,:] = self.get_sims(i, n=self.nsamples, mode='index')
+        return simulations
+    
+    def get_sims(self, i, n=100, mode='date'):
+        params = self._calibrate(i, mode=mode)
+        # print(params)
+        # print()
+        return self._simulate(params, nsamples=n, nsteps=self.window, EMS=True)
+
+
+class Heston_Simulator(Simulator):
+    def __init__(self, dataset, nsamples=10):
+        super().__init__(dataset=dataset, nsamples=nsamples)
+
+    def _simulate(self, params, s0=1, nsamples=10, nsteps=100, EMS=True):
+        """
+        Returns paths, an np.array() of dimensions (nsamples * nsteps)
+        """
+        mu, kappa, theta, sigma, rho, v0 = params
+        # For each sample
+        paths = np.zeros((nsamples, nsteps + 1)) # nsamples * (nsteps+1)
+        paths[:, 0] = s0
+        variances = np.zeros((nsamples, nsteps + 1)) # nsamples * (nsteps+1)
+        variances[:, 0] = v0
+
+        # For each sample
+        for i in range(0, nsamples, 2):
+            add_anithetic = i+1<nsamples
+            for t in range(nsteps):
+                # Generate correlated Brownian motions
+                z1 = np.random.normal()
+                z2 = np.random.normal()
+                dW_S = z1
+                dW_v = rho * dW_S + np.sqrt(1 - rho**2) * z2
+                v_prev = variances[i, t]
+                variances[i, t+1] = np.maximum(v_prev + kappa * (theta - v_prev) + sigma * np.sqrt(np.maximum(v_prev, 0)) * dW_v, 0) # Ensure variance stays positive
+                paths[i, t+1] = paths[i, t] * np.exp((mu - 0.5 * v_prev) + np.sqrt(np.maximum(v_prev, 0)) * dW_S)
+
+                if add_anithetic:
+                    # For the antithetic variate
+                    antithetic_dW_S = -z1
+                    antithetic_dW_v = rho * antithetic_dW_S + np.sqrt(1 - rho**2) * -z2
+                    v_prev = variances[i+1, t]
+                    variances[i+1, t+1] = np.maximum(v_prev + kappa * (theta - v_prev) + sigma * np.sqrt(np.maximum(v_prev, 0)) * antithetic_dW_v, 0)
+                    paths[i+1, t+1] = paths[i+1, t] * np.exp((mu - 0.5 * variances[i + 1, t+1]) + np.sqrt(np.maximum(variances[i+1, t+1], 0)) * antithetic_dW_S)
+                
+        # Empirical martingale correction
+        if EMS: paths = self._empirical_martingale_correction(paths, r=mu)
+        return paths
+    
+    def _init_engine(self, params, r, cur_date, S0=1):
+        mu, kappa, theta, sigma, rho, v0 = params
+        # Check that params satisfy Feller condition
+        assert 2*kappa*theta > sigma**2, f"Your kappa ({kappa}), theta ({theta}) and sigma ({sigma}) doesn't satisfy the Feller condition 2*kappa*theta > sigma**2.\nThis means your stochastic variance vt might reach negative values and cause problems to the Heston engine."
+        cur_date = ql.Date(cur_date.day, cur_date.month, cur_date.year)
+        ql.Settings.instance().evaluationDate = cur_date
+
+        spot_price = ql.SimpleQuote(S0)
+        rf_rate = ql.SimpleQuote(r)
+        yield_ts = ql.FlatForward(cur_date, ql.QuoteHandle(rf_rate), ql.Actual365Fixed())
+        risk_free_curve = ql.YieldTermStructureHandle(yield_ts)
+
+        # Heston model setup
+        heston_process = ql.HestonProcess(risk_free_curve, ql.YieldTermStructureHandle(ql.FlatForward(cur_date, 0, ql.Actual365Fixed())),
+                                        ql.QuoteHandle(spot_price), v0, kappa, theta, sigma, rho)
+        heston_model = ql.HestonModel(heston_process)
+        engine = ql.AnalyticHestonEngine(heston_model)
+        return engine
+    
+    def _price(self, S, K, T, cur_date, option_type='call'):
+        """
+        Calculate the theoretical Heston implied price for an option given parameters.
+        
+        Parameters:
+        S (float): Current stock price
+        K (float): Strike price of the option
+        T (float): Time to expiration of the option
+        cur_date
+        option_type (str): 'call' for call option, 'put' for put option
+        """
+        cur_date = ql.Date(cur_date.day, cur_date.month, cur_date.year)
+        expiry = cur_date + ql.Period(int(T), ql.Days)
+        if option_type=='call':
+            payoff = ql.PlainVanillaPayoff(ql.Option.Call, float(K))
+        elif option_type=='put':
+            payoff = ql.PlainVanillaPayoff(ql.Option.Put, float(K))
+        else:
+            raise NotImplementedError
+        exercise = ql.EuropeanExercise(expiry)
+        european_option = ql.VanillaOption(payoff, exercise)
+        european_option.setPricingEngine(self.engine)
+        theoretical_price = european_option.NPV()
+        return theoretical_price
+    
+    def _objective_func(self, params, market_prices, moneyness_levels, maturities, option_types, r, cur_date, S0=1):
+        """
+        Objective function to minimize the sum of squared differences between market and model average prices.
+        """
+        # print(params)
+        # Check that params satisfy Feller condition
+        mu, kappa, theta, sigma, rho, v0 = params
+        LHS = 2*kappa*theta
+        RHS = sigma**2
+        if LHS <= RHS:
+            errors_sum = (1000**2) * 2 * (RHS - LHS)/LHS
+        else:
+            self.engine = self._init_engine(params, r=r, cur_date=cur_date, S0=S0)
+            errors = []
+            for i, (market_price, M, T, option_type) in enumerate(zip(market_prices, moneyness_levels, maturities, option_types)):
+                K = S0*M
+                model_price = self._price(S0, K, T, cur_date, option_type)
+                # print(model_price, market_price)
+                error = (model_price-market_price)**2
+                errors.append(error)
+            errors_sum = np.sum(errors)
+        # print(errors_sum)
+        return errors_sum
+    
+    def _calibrate(self, i, mode='index'):
+        if mode=='index':
+            cur_date = self.option_prices.index[i]
+            option_eod = self.option_prices.iloc[i]
+            ivol_surface = self.ivol_surface.iloc[i]
+            r = self.rates.iloc[i]
+        else:
+            cur_date = i
+            option_eod = self.option_prices.loc[i]
+            ivol_surface = self.ivol_surface.loc[i]
+            r = self.rates.loc[i]
+
+        moneyness_level = option_eod['moneyness_level']
+        maturity = option_eod['maturity']
+        S0 = option_eod['underlying_price']
+        args=([option_eod['call_price'], option_eod['put_price']], [moneyness_level, moneyness_level], [maturity, maturity], ['call', 'put'], r, cur_date, S0)
+        
+        initial_v0 = ivol_surface.mean()**2
+        initial_params = [r, 1e-5, initial_v0, 1e-5, 0, initial_v0] # mu, kappa, theta, sigma, rho, v0
+        est_gamma = minimize(self._objective_func, initial_params, args=args, bounds=[(-1e-2,1e-2), (1e-10,0.3), (1e-10,1e-3), (1e-30,1e-3), (-1,1), (1e-30,0.5e-3)])
+        return est_gamma.x
+    
+    def run(self):
+        simulations = np.zeros((self.test_size, self.nsamples, self.window+1))
+        # For each window
+        for i in range(self.test_size):
+            simulations[i,:,:] = self.get_sims(i, n=self.nsamples, mode='index')
+        return simulations
+    
+    def get_sims(self, i, n=100, mode='date'):
+        params = self._calibrate(i, mode=mode)
+        # print(params)
+        # print()
+        return self._simulate(params, nsamples=n, nsteps=self.window, EMS=True)
+
 
 # Define a function to compute the KL divergence
 def kl_divergence(pdf1, pdf2):

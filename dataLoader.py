@@ -25,13 +25,16 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from functions import to_price_paths
 from fredapi import Fred
+from dotenv import load_dotenv
 
-fred = Fred("d6142deac2c2ea7f44ec74aaf3e19825")
+load_dotenv()
+fred = Fred(os.getenv('FRED_API_KEY'))
 
 class load_dataset(Dataset):
     def __init__(
         self,
         sample_size=None,
+        output_size=42,
         batch_size=8,
         test_porportion=0.1,
         verbose=False,
@@ -39,7 +42,7 @@ class load_dataset(Dataset):
     ):
         self.test_proportion = test_porportion
         self.input_size = 1
-        self.output_size = 42
+        self.output_size = output_size
         self.verbose = verbose
         self.data_mode = data_mode
         self.scaler = None
@@ -61,13 +64,22 @@ class load_dataset(Dataset):
         self.df['logreturns'] = np.log(close).diff()
         self.df['vix'] = vix
 
-        # Incorporate BBG data
-        ivol = pd.read_csv('data/ivol.csv', index_col='Date')['ivol']
-        ivol.index = pd.to_datetime(ivol.index, format='%d/%m/%Y')
-        pc_ratio = pd.read_csv('data/putcall_ratio.csv', index_col='Date')['putcall_ratio']
-        pc_ratio.index = pd.to_datetime(pc_ratio.index, format='%d/%m/%Y')
-        self.df['ivol'] = ivol
-        self.df['pc_ratio'] = pc_ratio
+        # Add ivol data
+        self.ivol_surface = pd.read_csv('data/ivol_surface.csv', index_col='Date')
+        self.ivol_surface.index = pd.to_datetime(self.ivol_surface.index)
+        for ivol in self.ivol_surface.columns:
+            self.df[ivol] = self.ivol_surface[ivol]
+        self.ivol_cols = ['100%60d', '100%30d']
+
+        # Add option price data
+        option_prices = pd.read_csv('data/option_chains.csv', index_col='Date')
+        option_prices.index = pd.to_datetime(option_prices.index)
+        original_index = self.df.loc[option_prices.index[0]:option_prices.index[-1]].index
+        # outer join
+        option_prices = pd.concat([option_prices, pd.DataFrame(index=original_index)], axis=1)
+        option_prices = option_prices.ffill()
+        # inner join
+        self.option_prices = pd.merge(option_prices, pd.DataFrame(index=original_index), left_index=True, right_index=True)
         
         # Extract normlised conditions from self.df
         self.df, self.condition_names = self.get_conditions(self.df)
@@ -127,9 +139,9 @@ class load_dataset(Dataset):
         
         df['rsi_z'] = np.clip(self.zscore(df['rsi'], window=252), -4.5,4.5)
         df['vix_z'] = np.clip(self.zscore(df['vix'], window=252), -4.5,4.5)
-        df['ivol_z'] = np.clip(self.zscore(df['ivol'], window=189), -4.5,4.5)
-        df['pc_ratio_z'] = self.zscore(df['pc_ratio'], window=252)
-        condition_names = ['rsi_z', 'ivol_z']
+        for ivol in self.ivol_cols:
+            df[ivol+'_z'] = np.clip(self.zscore(df[ivol], window=189), -4.5,4.5)
+        condition_names = ['rsi_z'] + [ivol+'_z' for ivol in self.ivol_cols]
         return df, condition_names
 
     # def normalise(self, rolling_window_size=None, keep_first_window_size=252):
@@ -173,7 +185,7 @@ if __name__ == '__main__':
     
     train_set = load_dataset(data_mode='Train', augment_times=augment_times, batch_size=batch_size)
     train_loader = data.DataLoader(train_set, batch_size=batch_size, num_workers=num_workers, shuffle=True)
-    print("Kernel sigmas:", 1.06*np.std(train_set.X_train, axis=0) * (len(train_set.X_train))**(-1/5))
+    # print("Kernel sigmas:", 1.06*np.std(train_set.X_train, axis=0) * (len(train_set.X_train))**(-1/5))
     
     # test_set = load_dataset(incl_val_group=False, data_mode='Test', single_class=True)
     # test_loader = data.DataLoader(test_set, batch_size=batch_size, num_workers=num_workers, shuffle=True)
