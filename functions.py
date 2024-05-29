@@ -191,6 +191,8 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
                 g_loss_components['m2_val'] = 0
                 g_loss_components['m3_val'] = 0
 
+                CORRECTION = 1
+
                 for j in range(batch_size):
                     dis_sample_start = j*args.dis_sample_size
                     dis_sample_end = (j+1)*args.dis_sample_size
@@ -200,11 +202,11 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
                     batch_fake_imgs = fake_imgs[gen_sample_start:gen_sample_end,0,0,1:]
 
                     mu_real, mu_fake = torch.mean(batch_real_imgs, dim=0), torch.mean(batch_fake_imgs, dim=0)
-                    std_real, std_fake = torch.std(batch_real_imgs, dim=0), torch.std(batch_fake_imgs, dim=0)
+                    std_real, std_fake = torch.std(batch_real_imgs, dim=0), torch.std(batch_fake_imgs, dim=0, correction=CORRECTION)
                     zscores_real, zscores_fake = (batch_real_imgs-mu_real)/std_real, (batch_fake_imgs-mu_fake)/std_fake
                     scaled_std_real, scaled_std_fake = std_real/mu_real, std_fake/mu_fake
                     n_real, n_fake = batch_real_imgs.size(0), batch_fake_imgs.size(0)
-                    skew_real, skew_fake = torch.sum(torch.pow(zscores_real, 3.0), dim=0) * n_real/(n_real-1)/(n_real-2), torch.sum(torch.pow(zscores_fake, 3.0), dim=0) * n_fake/(n_fake-1)/(n_fake-2)
+                    skew_real, skew_fake = torch.sum(torch.pow(zscores_real, 3.0), dim=0) * n_real/(n_real-1)/(n_real-2), torch.sum(torch.pow(zscores_fake, 3.0), dim=0) * (n_fake-CORRECTION+1)/(n_fake-CORRECTION)/(n_fake-CORRECTION-1)
                     # skew_real, skew_fake = torch.mean(torch.pow(zscores_real, 3.0), dim=0), torch.mean(torch.pow(zscores_fake, 3.0), dim=0)
 
                     g_loss_components['var'] = g_loss_components['var'] + 1/(torch.mean(scaled_std_fake))
@@ -225,10 +227,10 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
                     batch_real_val = real_validity[dis_sample_start:dis_sample_end, :]
                     batch_fake_val = fake_validity[dis_sample_start:dis_sample_end, :]
                     mu_real_val, mu_fake_val = torch.mean(batch_real_val), torch.mean(batch_fake_val)
-                    std_real_val, std_fake_val = torch.std(batch_real_val), torch.std(batch_fake_val)
+                    std_real_val, std_fake_val = torch.std(batch_real_val), torch.std(batch_fake_val, correction=CORRECTION)
                     zscores_real_val, zscores_fake_val = (batch_real_val-mu_real_val)/std_real_val, (batch_fake_val-mu_fake_val)/std_fake_val
                     # scaled_std_real_val, scaled_std_fake_val = std_real_val/mu_real_val, std_fake_val/mu_fake_val
-                    skew_real_val, skew_fake_val = torch.sum(torch.pow(zscores_real_val, 3.0)) * n_real/(n_real-1)/(n_real-2), torch.sum(torch.pow(zscores_fake_val, 3.0)) * n_real/(n_real-1)/(n_real-2)
+                    skew_real_val, skew_fake_val = torch.sum(torch.pow(zscores_real_val, 3.0)) * n_real/(n_real-1)/(n_real-2), torch.sum(torch.pow(zscores_fake_val, 3.0)) * (n_real-CORRECTION+1)/(n_real-CORRECTION)/(n_real-CORRECTION-1)
                     g_loss_components['m1_val'] = g_loss_components['m1_val'] + torch.pow(mu_real_val-mu_fake_val, 2.0)
                     g_loss_components['m2_val'] = g_loss_components['m2_val'] + torch.pow(std_real_val-std_fake_val, 2.0)
                     g_loss_components['m3_val'] = g_loss_components['m3_val'] + torch.pow(skew_real_val-skew_fake_val, 2.0)
@@ -237,6 +239,10 @@ def train(args, gen_net: nn.Module, dis_net: nn.Module, gen_optimizer, dis_optim
                 else: g_loss_components['var'] = g_loss_components['var'] * args.var_term_weight
 
                 g_loss_components['m2x'] = g_loss_components['m2x'] * args.m2x_term_weight
+                g_loss_components['m2'] = g_loss_components['m2'] * 1e+02
+                g_loss_components['m3'] = g_loss_components['m3'] * 1e-01
+                g_loss_components['m3_val'] = g_loss_components['m3_val'] * 1e-02
+                
 
                 g_loss = 0
                 for key,val in g_loss_components.items():
