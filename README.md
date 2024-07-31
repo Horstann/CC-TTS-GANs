@@ -16,7 +16,6 @@ You can visualise model results in `02 Visualisation.ipynb`. <br>
 Out-sample results are evaluated against Monte-Carlo benchmarks in `03 Evaluation.ipynb`.
 
 ## Credits
-This research wouldn't have been possible without the resources below.
+This research wouldn't have been possible without the repositories below.
 - Li, X., Metsis, V., Wang, H., & Ngu, A. H. H. (2022, June 26). TTS-GAN: a transformer-based Time-Series Generative adversarial network. arXiv.org.https://arxiv.org/abs/2202.02691
 - Ding, X., Wang, Y., Xu, Z., Welch, W. J., & Wang, Z. J. (2023, October 22). CCGAN: Continuous conditional generative adversarial networks for image generation. OpenReview. https://openreview.net/forum?id=PrzjugOsDeE
-- donshell. (2023, April 10). [D] A better way to compute the Fréchet Inception Distance (FID). https://www.reddit.com/r/MachineLearning/comments/12hv2u6/d_a_better_way_to_compute_the_fr%C3%A9chet_inception/
